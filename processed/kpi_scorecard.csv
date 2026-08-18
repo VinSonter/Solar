@@ -1,0 +1,11 @@
+KPI,Actual,Target,Status
+Portfolio Performance Ratio,1.000,0.95,On Target
+Inverter Availability,100.0%,98%,On Target
+Underperformance Event Rate,15.8%,<5%,Needs Attention
+Total Lost Energy,561.6 kWh,<50 kWh,Needs Attention
+Data Completeness,97.9%,99%,Monitor
+Lost Revenue (PPA),$22.46,---,---
+Lost Revenue (SREC),$39.31,---,---
+Total Revenue Impact,$61.77,---,---
+Repeat Offender Rate,50.0%,<10%,Needs Attention
+Worst Inverter PR,0.697 (Quc1TzYxW2),>0.85,Needs Attention
