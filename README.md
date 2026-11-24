@@ -15,7 +15,7 @@ On a site with many inverters, which one should the field crew go to first, what
 | Main issue | Two inverters running 7-8% below peers | Repeated midday outages |
 
 1. **Plant 2's losses are outages, not weak inverters.** About 90% of its lost energy comes from inverters reading zero while their neighbours are producing.
-2. **The outages share a cause.** 96% of outage hours happen while 5 or more inverters are down at the same time, and 82% fall between 10:00 and 14:00. That pattern points upstream (grid voltage trips, an export limit, a feeder or transformer) before it points at any single inverter. The data cannot confirm which.
+2. **The outages share a cause.** 87% of outage hours happen while 5 or more inverters are down at the same time, and 82% fall between 10:00 and 14:00. That pattern points upstream (grid voltage trips, an export limit, a feeder or transformer) before it points at any single inverter. The data cannot confirm which.
 3. **One inverter has its own problem.** `Quc1TzYxW2pYoWX` runs at about 82% of its peers even when it is on. It tops the fix-first list at about $4,300 lost.
 4. **Plant 1 has two chronic underperformers.** `bvBOhCH3iADSZry` and `1BY6WEcLGh8j5v7` run 7-8% below their peers every day.
 5. **Four Plant 2 inverters stopped reporting for about nine days.** These are flagged as data gaps and not priced, because the loss is unknown.

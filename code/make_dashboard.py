@@ -141,8 +141,8 @@ save(fig, "panel3_inverter_health.png")
 # ------------------------------------------------------------
 out = events[events["fault_type"] == "outage"]
 causes = pd.Series({
-    "Outage, 5+ inverters\ndown together": out.loc[out["shared_outage"], "lost_mwh"].sum(),
-    "Outage, isolated": out.loc[~out["shared_outage"], "lost_mwh"].sum(),
+    "Outage, 5+ inverters\ndown together": out["lost_mwh_shared"].sum(),
+    "Outage, fewer than 5\ndown together": out["lost_mwh"].sum() - out["lost_mwh_shared"].sum(),
     "Derate\n(below 75% of peers)": fix["lost_mwh_derate"].sum(),
     "Chronic\n(steadily below peers)": fix["lost_mwh_chronic"].sum(),
 })

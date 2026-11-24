@@ -126,6 +126,10 @@ def build_events(readings):
         (r["baseline_kw"] - r["ac_kw"].fillna(0)).clip(lower=0) * INTERVAL_HOURS
     )
 
+    # a reading is "shared" when this many inverters are at zero at that moment
+    r["is_shared"] = (r["state"] == "outage") & (r["down_together"] >= SHARED_OUTAGE_COUNT)
+    r["shared_kwh"] = r["shortfall_kwh"].where(r["is_shared"], 0.0)
+
     flagged = r[r["state"] != "normal"]
     events = flagged.groupby("run_id").agg(
         plant=("plant", "first"),
@@ -137,6 +141,8 @@ def build_events(readings):
         avg_pct_of_peers=("ratio", lambda x: 100 * x.mean()),
         lost_kwh=("shortfall_kwh", "sum"),
         peak_down_together=("down_together", "max"),
+        shared_intervals=("is_shared", "sum"),
+        shared_kwh=("shared_kwh", "sum"),
     ).reset_index(drop=True)
 
     events = events[events["intervals"] >= MIN_EVENT_INTERVALS].copy()
@@ -148,10 +154,8 @@ def build_events(readings):
     events["lost_usd"] = events["lost_mwh"] * PPA_RATE
     last_reading = r.groupby("plant")["DATE_TIME"].max()
     events["ongoing_at_end"] = events["end"] == events["plant"].map(last_reading)
-    events["shared_outage"] = (
-        (events["fault_type"] == "outage")
-        & (events["peak_down_together"] >= SHARED_OUTAGE_COUNT)
-    )
+    events["shared_hours"] = events["shared_intervals"] * INTERVAL_HOURS
+    events["lost_mwh_shared"] = events["shared_kwh"] / 1000
     events["fault_type"] = events["fault_type"].replace({"gap": "data gap"})
 
     # keep the event id on each reading so chronic loss can skip event time
@@ -162,7 +166,7 @@ def build_events(readings):
 
     cols = ["plant", "inverter", "fault_type", "start", "end", "daylight_hours",
             "avg_pct_of_peers", "lost_mwh", "lost_usd", "peak_down_together",
-            "shared_outage", "ongoing_at_end"]
+            "shared_hours", "lost_mwh_shared", "ongoing_at_end"]
     return events[cols].sort_values("lost_usd", ascending=False), r
 
 
@@ -212,8 +216,7 @@ def build_priority(events, readings):
         reported = r[r["state"] != "gap"]
         outages = ev[ev["fault_type"] == "outage"]
         out_hours = outages["daylight_hours"].sum()
-        shared_pct = (100 * outages.loc[outages["shared_outage"], "daylight_hours"].sum()
-                      / out_hours) if out_hours else 0.0
+        shared_pct = 100 * outages["shared_hours"].sum() / out_hours if out_hours else 0.0
         check = SUGGESTED_CHECK[primary]
         if primary == "outage" and shared_pct >= 50:
             check = SHARED_CHECK
@@ -319,8 +322,7 @@ def make_figure(readings, priority, events, path):
     top5_share = 100 * priority.head(5)["lost_usd"].sum() / total_usd
     days = readings["DATE_TIME"].dt.date.nunique()
     out = events[events["fault_type"] == "outage"]
-    shared_share = (100 * out.loc[out["shared_outage"], "daylight_hours"].sum()
-                    / out["daylight_hours"].sum())
+    shared_share = 100 * out["shared_hours"].sum() / out["daylight_hours"].sum()
     fig.text(0.10, 0.955, "Which inverter to fix first", fontsize=20,
              fontweight="bold", ha="left")
     fig.text(0.10, 0.918,
@@ -483,7 +485,7 @@ def main():
               f"chronic {pr['lost_mwh_chronic'].sum():,.1f} MWh")
     out = events[events["fault_type"] == "outage"]
     if len(out):
-        shared = out.loc[out["shared_outage"], "daylight_hours"].sum()
+        shared = out["shared_hours"].sum()
         print(f"\nOutage hours with {SHARED_OUTAGE_COUNT}+ inverters down together: "
               f"{100 * shared / out['daylight_hours'].sum():.0f}%")
         o = readings[(readings["state"] == "outage") & readings["in_event"]]
@@ -498,7 +500,8 @@ def main():
 
     ok = run_qa(gen, readings, events, priority)
 
-    events.round({"daylight_hours": 2, "avg_pct_of_peers": 1, "lost_mwh": 3, "lost_usd": 2}).to_csv(OUT_DIR / "fault_events.csv", index=False)
+    events.round({"daylight_hours": 2, "avg_pct_of_peers": 1, "lost_mwh": 3, "lost_usd": 2,
+                  "shared_hours": 2, "lost_mwh_shared": 3}).to_csv(OUT_DIR / "fault_events.csv", index=False)
     priority.round(3 if False else {c: 2 for c in priority.select_dtypes("float").columns}).to_csv(OUT_DIR / "fix_first_list.csv", index=False)
     fig_path = PLOT_DIR / "panel7_fix_first.png"
     make_figure(readings, priority, events, fig_path)
