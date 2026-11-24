@@ -1,41 +1,49 @@
-import pandas as pd
+"""Load the processed CSVs into MySQL (solar_performance_db).
+
+Clears the four tables first, so it is safe to run again after the
+pipeline is re-run. Asks for the MySQL password instead of storing it.
+"""
+from getpass import getpass
+from pathlib import Path
+
 import mysql.connector
+import pandas as pd
+
+DATA_DIR = Path(__file__).resolve().parents[1] / "processed"
 
 conn = mysql.connector.connect(
     host="localhost",
     user="root",
-    password="",  # ← YOUR PASSWORD HERE
-    database="solar_performance_db"
+    password=getpass("MySQL password: "),
+    database="solar_performance_db",
 )
 cursor = conn.cursor()
 print("Connected!\n")
 
-DATA_DIR = "/Users/vinayaksonter/Desktop/VinSonter/Solar/processed"
+tables = [
+    "daily_plant_performance",
+    "daily_inverter_performance",
+    "inverter_health_summary",
+    "underperformance_alerts",
+]
 
-# Load each CSV into its table
-tables = {
-    "daily_plant_performance": f"{DATA_DIR}/daily_plant_performance.csv",
-    "daily_inverter_performance": f"{DATA_DIR}/daily_inverter_performance.csv",
-    "inverter_health_summary": f"{DATA_DIR}/inverter_health_summary.csv",
-    "underperformance_alerts": f"{DATA_DIR}/underperformance_alerts.csv",
-}
+for table in tables:
+    df = pd.read_csv(DATA_DIR / f"{table}.csv")
+    cols = [c for c in df.columns if c != "id"]
+    placeholders = ", ".join(["%s"] * len(cols))
+    col_names = ", ".join(cols)
 
-for table, filepath in tables.items():
-    df = pd.read_csv(filepath)
-    cols = [c for c in df.columns if c != 'id']
-    placeholders = ', '.join(['%s'] * len(cols))
-    col_names = ', '.join(cols)
-    
-    count = 0
-    for _, row in df.iterrows():
-        values = [None if pd.isna(v) else v for v in row[cols].values]
-        cursor.execute(f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})", values)
-        count += 1
-    
+    cursor.execute(f"DELETE FROM {table}")
+    rows = [
+        tuple(None if pd.isna(v) else (v.item() if hasattr(v, "item") else v) for v in row)
+        for row in df[cols].itertuples(index=False, name=None)
+    ]
+    cursor.executemany(
+        f"INSERT INTO {table} ({col_names}) VALUES ({placeholders})", rows
+    )
     conn.commit()
-    print(f"{table}: {count} rows loaded")
+    print(f"{table}: {len(rows)} rows loaded")
 
-# Verify
 print("\n--- VERIFICATION ---")
 for table in tables:
     cursor.execute(f"SELECT COUNT(*) FROM {table}")

@@ -16,22 +16,18 @@ import pandas as pd
 import numpy as np
 import warnings
 import os
-import mysql.connector
+from pathlib import Path
 
 warnings.filterwarnings('ignore')
 
 # ============================================================
 # CONFIG
 # ============================================================
-DATA_DIR = "/Users/vinayaksonter/Desktop/VinSonter/Solar"
-PPA_RATE = 40  # $/MWh — typical Power Purchase Agreement rate
-
-MYSQL_CONFIG = {
-    "host": "localhost",
-    "user": "root",
-    "password": "",  # ← YOUR PASSWORD HERE
-    "database": "solar_performance_db"
-}
+# Paths are relative to the repo, so the script runs from any machine
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = ROOT / "Datasets"
+PPA_RATE = 40  # $/MWh — assumed Power Purchase Agreement rate
+INTERVAL_HOURS = 0.25  # readings are every 15 minutes
 
 # ============================================================
 # STEP 1: DATA INGESTION & CLEANING
@@ -45,6 +41,10 @@ gen1 = pd.read_csv(os.path.join(DATA_DIR, "Plant_1_Generation_Data.csv"))
 gen2 = pd.read_csv(os.path.join(DATA_DIR, "Plant_2_Generation_Data.csv"))
 wx1 = pd.read_csv(os.path.join(DATA_DIR, "Plant_1_Weather_Sensor_Data.csv"))
 wx2 = pd.read_csv(os.path.join(DATA_DIR, "Plant_2_Weather_Sensor_Data.csv"))
+
+# Plant 1 DC_POWER is recorded 10x too high in the source file
+# (DC/AC is about 10.2 there and about 1.02 in Plant 2), so scale it back.
+gen1['DC_POWER'] = gen1['DC_POWER'] / 10
 
 print(f"Loaded: Gen1={len(gen1)}, Gen2={len(gen2)}, Wx1={len(wx1)}, Wx2={len(wx2)}")
 
@@ -145,15 +145,17 @@ daily_inverter = daylight.groupby(['DATE', 'PLANT_LABEL', 'PLANT_ID', 'SOURCE_KE
     records_count=('AC_POWER', 'count')
 ).reset_index()
 
-# Convert 15-min power readings to daily kWh (power * 0.25 hours)
-daily_inverter['total_dc_kwh'] = daily_inverter['total_dc_kwh'] * 0.25 / 1000
-daily_inverter['total_ac_kwh'] = daily_inverter['total_ac_kwh'] * 0.25 / 1000
+# Power readings are in kW. A 15-minute reading of X kW is X * 0.25 kWh.
+daily_inverter['total_dc_kwh'] = daily_inverter['total_dc_kwh'] * INTERVAL_HOURS
+daily_inverter['total_ac_kwh'] = daily_inverter['total_ac_kwh'] * INTERVAL_HOURS
 
 print(f"Daily inverter records: {len(daily_inverter)}")
 
 # --- 3c: Performance Ratio per inverter ---
-# PR = actual yield / (irradiance * peak hours * reference efficiency)
-# Simplified: compare each inverter against plant daily average
+# This is a relative ratio: each inverter's daily energy against the plant's
+# daily average. It ranks inverters within a plant. It is not the IEC
+# performance ratio, which needs nameplate capacity (not in this dataset),
+# and by construction it averages to 1.0 across a plant.
 plant_daily_avg = daily_inverter.groupby(['DATE', 'PLANT_LABEL']).agg(
     plant_avg_ac=('total_ac_kwh', 'mean')
 ).reset_index()
@@ -229,7 +231,7 @@ alerts['DATE'] = pd.to_datetime(alerts['DATE'])
 print(f"Underperformance alerts: {len(alerts)}")
 
 feature_summary = {
-    'performance_ratio': 'Actual output / plant average output',
+    'performance_ratio': 'Inverter daily energy / plant daily average (relative, not IEC PR)',
     'status': 'Underperforming (<0.85), Normal (0.85-1.15), Over-performing (>1.15)',
     'lost_kwh': 'Shortfall vs plant average for underperforming inverters',
     'lost_revenue_usd': 'Lost kWh * PPA rate ($40/MWh)',
@@ -302,6 +304,13 @@ neg_lost = (daily_inverter['lost_kwh'] < 0).sum()
 status = "PASS" if neg_lost == 0 else "FAIL"
 qa_results.append((check, f"{neg_lost} negative values", status))
 
+# Check 9: Units — integrated energy should match the plant's own daily meter
+check = "Units match DAILY_YIELD meter"
+with_meter = daily_inverter[(daily_inverter['daily_yield'] > 0) & (daily_inverter['PLANT_LABEL'] == 'Plant_1')]
+unit_ratio = (with_meter['total_ac_kwh'] / with_meter['daily_yield']).median()
+status = "PASS" if 0.9 < unit_ratio < 1.1 else "FAIL"
+qa_results.append((check, f"median ratio {unit_ratio:.3f}", status))
+
 print(f"\n{'Check':<45} {'Result':<35} {'Status'}")
 print("-" * 90)
 for check, result, status in qa_results:
@@ -324,20 +333,19 @@ for plant in ['Plant_1', 'Plant_2']:
     inv = daily_inverter[daily_inverter['PLANT_LABEL'] == plant]
     
     print(f"\n  {plant}:")
-    print(f"  Total AC Energy: {p['total_ac_kwh'].sum():.1f} kWh")
-    print(f"  Avg Daily Production: {p['total_ac_kwh'].mean():.1f} kWh/day")
-    print(f"  Avg Performance Ratio: {p['avg_performance_ratio'].mean():.3f}")
-    print(f"  Avg Irradiance: {p['avg_irradiance'].mean():.3f} kWh/m²")
+    print(f"  Total AC Energy: {p['total_ac_kwh'].sum() / 1000:,.1f} MWh")
+    print(f"  Avg Daily Production: {p['total_ac_kwh'].mean() / 1000:,.1f} MWh/day")
+    print(f"  Avg Irradiance: {p['avg_irradiance'].mean():.3f} kW/m²")
     print(f"  Avg Module Temp: {p['avg_module_temp'].mean():.1f}°C")
-    print(f"  Total Lost Energy: {inv['lost_kwh'].sum():.1f} kWh")
-    print(f"  Total Lost Revenue: ${inv['lost_revenue_usd'].sum():.2f}")
+    print(f"  Total Lost Energy: {inv['lost_kwh'].sum() / 1000:,.1f} MWh")
+    print(f"  Total Lost Revenue: ${inv['lost_revenue_usd'].sum():,.0f}")
     print(f"  Underperformance Events: {(inv['status'] == 'Underperforming').sum()}")
     
     # Top 3 worst inverters
     worst = inverter_health[inverter_health['PLANT_LABEL'] == plant].head(3)
     print(f"  Top 3 worst inverters:")
     for _, row in worst.iterrows():
-        print(f"    {row['SOURCE_KEY']}: PR={row['avg_pr']:.3f}, Lost={row['total_lost_kwh']:.1f} kWh, "
+        print(f"    {row['SOURCE_KEY']}: PR={row['avg_pr']:.3f}, Lost={row['total_lost_kwh'] / 1000:.1f} MWh, "
               f"Underperforming {row['underperforming_days']:.0f} days")
 
 print("\nStep 5 complete.\n")
@@ -349,7 +357,7 @@ print("=" * 60)
 print("STEP 6: EXPORT")
 print("=" * 60)
 
-output_dir = os.path.join(DATA_DIR, "processed")
+output_dir = ROOT / "processed"
 os.makedirs(output_dir, exist_ok=True)
 
 daily_plant.to_csv(os.path.join(output_dir, "daily_plant_performance.csv"), index=False)
@@ -369,4 +377,4 @@ print("PIPELINE COMPLETE")
 print("=" * 60)
 print(f"Total records processed: {len(gen_all) + len(wx_all):,}")
 print(f"Output tables: 4")
-print(f"Ready for MySQL loading and Tableau dashboard.")
+print("Next: python3 code/inverter_fault_detection.py, then python3 code/make_dashboard.py")

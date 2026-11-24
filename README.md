@@ -1,196 +1,115 @@
-# Solar Asset Performance Monitoring & Analysis
+# Solar Asset Performance Monitoring & Inverter Fault Detection
+
+On a site with many inverters, which one should the field crew go to first, what is wrong with it, and what is it costing? This project answers that for two solar plants (44 inverters, 34 days of 15-minute data).
+
+![Which inverter to fix first](Output_Plots/panel7_fix_first.png)
+
+## What it found
+
+| | Plant 1 | Plant 2 |
+|---|---|---|
+| Energy produced | 5,293 MWh | 4,084 MWh |
+| Energy lost to faults | 51 MWh | 965 MWh |
+| Lost revenue at $40/MWh | $2,040 | $38,582 |
+| Outage events | 12 | 327 |
+| Main issue | Two inverters running 7-8% below peers | Repeated midday outages |
+
+1. **Plant 2's losses are outages, not weak inverters.** About 90% of its lost energy comes from inverters reading zero while their neighbours are producing.
+2. **The outages share a cause.** 96% of outage hours happen while 5 or more inverters are down at the same time, and 82% fall between 10:00 and 14:00. That pattern points upstream (grid voltage trips, an export limit, a feeder or transformer) before it points at any single inverter. The data cannot confirm which.
+3. **One inverter has its own problem.** `Quc1TzYxW2pYoWX` runs at about 82% of its peers even when it is on. It tops the fix-first list at about $4,300 lost.
+4. **Plant 1 has two chronic underperformers.** `bvBOhCH3iADSZry` and `1BY6WEcLGh8j5v7` run 7-8% below their peers every day.
+5. **Four Plant 2 inverters stopped reporting for about nine days.** These are flagged as data gaps and not priced, because the loss is unknown.
+
+## How the detection works
+
+Every inverter in a plant sits under the same sky. At each 15-minute reading, each inverter is compared with the median of the inverters in the same plant that are producing at that moment. A cloud lowers all of them together, so nothing is flagged. One inverter dropping while its peers hold is flagged.
+
+| Fault type | Rule |
+|---|---|
+| Outage | Output at zero while peers are producing |
+| Derate | Output below 75% of peers |
+| Chronic | Median output below 95% of peers over the whole period |
+| Data gap | No reading from the inverter |
+
+Flagged readings that sit next to each other are grouped into events with a start, an end, a duration, and a loss in MWh and dollars. Events shorter than 30 minutes are ignored. The output is a ranked list of all 44 inverters with a suggested first check for each.
+
+## Limits
+
+- This is a public dataset (Kaggle, two plants in India, May to June 2020). The method is the part that carries over to other sites.
+- The dataset has inverter IDs but no physical positions, so the list says which inverter, not where it sits in the field.
+- Nameplate capacity is not in the data, so there is no IEC performance ratio. Inverters are compared with each other instead.
+- The $40/MWh PPA rate and $70/MWh SREC rate are assumptions.
+- When most of a plant is down at once, the peer median is less reliable. Readings with fewer than 5 producing peers are skipped.
+
+## Pipeline
+
+```
+Raw CSVs (generation + weather, 142,917 records)
+    |
+code/Solar.py                      clean, merge, daily metrics, 9 QA checks
+    |
+code/inverter_fault_detection.py   15-minute peer comparison, events, fix-first list, 7 QA checks
+    |
+code/make_dashboard.py             panels 1-6 and KPI scorecard
+    |
+code/load_solar.py                 load daily tables into MySQL
+```
+
+`Solar.py` also runs a simpler daily screen (inverter-days below 85% of the plant average). It feeds the MySQL tables and counts less loss than the 15-minute detection, because it only sees whole days.
+
+## Outputs
+
+| File | What it holds |
+|---|---|
+| `processed/fix_first_list.csv` | All 44 inverters ranked by lost revenue, with fault type, hours down, and suggested check |
+| `processed/fault_events.csv` | 464 events with start, end, type, and loss |
+| `processed/kpi_scorecard.csv` | Portfolio KPIs against targets |
+| `processed/daily_plant_performance.csv` | Daily metrics per plant (68 rows) |
+| `processed/daily_inverter_performance.csv` | Daily metrics per inverter (1,464 rows) |
+| `processed/inverter_health_summary.csv` | One row per inverter (44 rows) |
+| `processed/underperformance_alerts.csv` | Inverter-days below 85% of plant average (232 rows) |
 
 ## Dashboard
 
-### Plant Comparison
-![Plant Comparison](Output_Plots/panel1_plant_comparison.png)
-![Daily Production](Output_Plots/panel2_daily_production.png)
-![Inverter Health](Output_Plots/panel3_inverter_health.png)
-![Lost Energy](Output_Plots/panel4_lost_energy_revenue.png)
-![Weather Impact](Output_Plots/panel5_weather_vs_production.png)
+![KPI scorecard](Output_Plots/panel6_kpi_dashboard.png)
+![Where the lost energy went](Output_Plots/panel4_lost_energy_revenue.png)
+![Plant comparison](Output_Plots/panel1_plant_comparison.png)
+![Daily production](Output_Plots/panel2_daily_production.png)
+![Inverter health](Output_Plots/panel3_inverter_health.png)
+![Irradiance vs production](Output_Plots/panel5_weather_vs_production.png)
 
-## Overview:
+## Data notes
 
-Built a solar asset performance monitoring system that ingests generation and weather data from two solar plants (44 inverters), calculates performance metrics, identifies underperforming equipment, and quantifies lost energy and revenue impact. The project simulates what an Asset Performance Data Analyst does at a solar O&M company — monitoring assets, validating data, flagging issues, and reporting findings to stakeholders.
+Two things in the source files needed handling:
 
-## Business Questions Answered
+- `AC_POWER` is in kW. A 15-minute reading of X kW is X × 0.25 kWh. A QA check confirms the integrated energy matches the plant's own `DAILY_YIELD` meter (ratio 1.00).
+- Plant 1 `DC_POWER` is recorded 10x too high (DC/AC is about 10.2 there and 1.02 in Plant 2). The pipeline scales it back.
 
-1. Are our solar assets producing what they should?
-2. Which inverters are underperforming and by how much?
-3. How much energy and revenue are we losing?
-4. How does weather affect production?
-5. Which equipment needs immediate maintenance attention?
+## Database
 
-## Key Findings
+MySQL database `solar_performance_db` with 4 tables: `daily_plant_performance`, `daily_inverter_performance`, `inverter_health_summary`, `underperformance_alerts`. The 8 analytical queries are in `Output_Plots/solar_queries.sql`.
 
-| Metric | Plant 1 | Plant 2 |
-|--------|---------|---------|
-| Total Energy | 5,293 kWh | 4,084 kWh |
-| Underperformance Events | 6 | 226 |
-| Lost Energy | 13.5 kWh | 548.1 kWh |
-| Lost Revenue | $0.54 | $21.92 |
-| Worst Inverter PR | 0.908 | 0.697 |
+## How to run
 
-Plant 2 has systemic inverter issues — 226 underperformance events across 34 days. The three worst inverters (Quc1TzYxW2pYoWX, Et9kgGMDl729KT4, LYwnQax7tkwH5Cb) are producing 70-81% of expected output and need immediate field inspection. Plant 1's trend slope (268 kWh per unit irradiance) is more than double Plant 2's (122), confirming Plant 2 converts sunlight to energy far less efficiently.
-
-## Data Sources
-
-| Dataset | Source | Records |
-|---------|--------|---------|
-| Plant 1 & 2 Generation Data | Kaggle — Solar Power Generation | 136,476 |
-| Plant 1 & 2 Weather Sensor Data | Kaggle | 6,441 |
-| Rooftop PV Technical Potential | NREL | 5,132 |
-
-## Pipeline Architecture
-
-```
-Raw CSVs (Generation + Weather)
-    ↓
-Step 1: Data Ingestion & Cleaning (Python)
-    • Standardize date formats
-    • Combine both plants
-    • Add helper columns
-    ↓
-Step 2: Merge Generation + Weather (Python)
-    • Join on timestamp and plant ID
-    • Forward fill minor gaps
-    • Filter to daylight hours
-    ↓
-Step 3: Feature Engineering (Python)
-    • Performance Ratio per inverter
-    • Lost Energy (kWh)
-    • Revenue Impact ($40/MWh PPA rate)
-    • Status flags (Underperforming/Normal/Over-performing)
-    • Inverter Health Ranking
-    • DC-AC Conversion Efficiency
-    • Rolling 7-day Performance Ratio
-    ↓
-Step 4: Data Quality Checks (Python)
-    • 8 automated QA checks — all passed
-    ↓
-Step 5: MySQL Database (4 tables, 1,808 rows)
-    ↓
-Step 6: SQL Analysis (8 analytical queries)
-    ↓
-Step 7: Dashboard (5 panels in Matplotlib)
-```
-
-## Database Schema
-
-MySQL database `solar_performance_db` with 4 tables:
-
-| Table | Description | Rows |
-|-------|-------------|------|
-| `daily_plant_performance` | Daily aggregated metrics per plant | 68 |
-| `daily_inverter_performance` | Daily metrics per inverter | 1,464 |
-| `inverter_health_summary` | Overall health score per inverter | 44 |
-| `underperformance_alerts` | Every underperformance event flagged | 232 |
-
-## QA Checks
-
-| Check | Result |
-|-------|--------|
-| Row count validation | PASS |
-| No negative AC power | PASS |
-| Performance ratio in bounds (0-3) | PASS |
-| No future dates | PASS |
-| Both plants present | PASS |
-| All 44 inverters reporting | PASS |
-| Temperature in bounds (10-80°C) | PASS |
-| Lost energy non-negative | PASS |
-
-## Sample SQL Queries
-
-**Plant performance comparison:**
-```sql
-SELECT plant_label,
-       ROUND(SUM(total_ac_kwh), 1) AS total_energy_kwh,
-       ROUND(SUM(total_lost_kwh), 1) AS total_lost_kwh,
-       ROUND(SUM(total_lost_revenue), 2) AS lost_revenue_usd
-FROM daily_plant_performance
-GROUP BY plant_label;
-```
-
-**Top 5 worst inverters:**
-```sql
-SELECT plant_label, source_key,
-       ROUND(avg_pr, 3) AS performance_ratio,
-       underperforming_days,
-       ROUND(total_lost_kwh, 1) AS lost_kwh
-FROM inverter_health_summary
-ORDER BY avg_pr ASC
-LIMIT 5;
-```
-
-**Alert summary by inverter:**
-```sql
-SELECT plant_label, source_key,
-       COUNT(*) AS alert_count,
-       ROUND(AVG(performance_ratio), 3) AS avg_pr_when_failing,
-       ROUND(SUM(lost_kwh), 1) AS total_lost_kwh
-FROM underperformance_alerts
-GROUP BY plant_label, source_key
-ORDER BY total_lost_kwh DESC;
-```
-
-## Tech Stack
-
-- **Python** — Pandas, NumPy, Matplotlib
-- **MySQL** — Database design, schema creation, analytical queries
-- **SQL** — Complex queries, aggregations, window functions, trend analysis
-- **Google Colab** — Data processing and visualization
-- **Git/GitHub** — Version control and documentation
-
-## How to Run
-
-### 1. Run the Pipeline (Google Colab or local)
 ```bash
 source ~/ds_env/bin/activate
-python3 solar_pipeline.py
+python3 code/Solar.py
+python3 code/inverter_fault_detection.py
+python3 code/make_dashboard.py
 ```
 
-### 2. Create MySQL Database
-```bash
-mysql -u root -p -e "CREATE DATABASE solar_performance_db;"
-```
+## Tech stack
 
-### 3. Create Tables and Load Data
-```bash
-mysql -u root -p solar_performance_db < solar_queries.sql
-python3 load_solar.py
-```
+Python (Pandas, NumPy, Matplotlib), MySQL, SQL, Git
 
-### 4. Run Analytical Queries
-```bash
-mysql -u root -p < solar_queries.sql > query_results.txt
-```
+## Data sources
 
-## Project Structure
-
-```
-Solar/
-├── solar_pipeline.py              # Main Python ETL pipeline
-├── load_solar.py                  # MySQL data loader
-├── solar_queries.sql              # 8 analytical SQL queries
-├── query_results.txt              # Query output documentation
-├── Plant_1_Generation_Data.csv    # Raw data
-├── Plant_2_Generation_Data.csv
-├── Plant_1_Weather_Sensor_Data.csv
-├── Plant_2_Weather_Sensor_Data.csv
-├── processed/
-│   ├── daily_plant_performance.csv
-│   ├── daily_inverter_performance.csv
-│   ├── inverter_health_summary.csv
-│   ├── underperformance_alerts.csv
-│   ├── panel1_plant_comparison.png
-│   ├── panel2_daily_production.png
-│   ├── panel3_inverter_health.png
-│   ├── panel4_lost_energy_revenue.png
-│   └── panel5_weather_vs_production.png
-└── README.md
-```
+| Dataset | Source | Records |
+|---|---|---|
+| Plant 1 & 2 generation data | Kaggle, Solar Power Generation Data | 136,476 |
+| Plant 1 & 2 weather sensor data | Kaggle | 6,441 |
 
 ## Author
 
 **Vinayak Sonter**
-MS in Data Science — University of Massachusetts Dartmouth
+MS in Data Science, University of Massachusetts Dartmouth

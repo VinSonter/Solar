@@ -85,4 +85,4 @@ SELECT plant_label, source_key,
        ROUND(avg_pr, 3) AS performance_ratio
 FROM inverter_health_summary
 ORDER BY dc_ac_efficiency ASC
-LIMIT 10:
+LIMIT 10;
